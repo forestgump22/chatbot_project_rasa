@@ -1,0 +1,22 @@
+version: "3.1"
+
+nlu: 
+- intent: greet
+  examples: |
+    - hey
+    - hello
+    - hi 
+    - hola
+    - hello there
+    - good
+- intent: goodbye
+  examples: |
+    - good by
+    - adios
+    - good night
+    - bye
+- intent: affirm
+  examples: |
+    - si
+    - yes
+    - indeed
