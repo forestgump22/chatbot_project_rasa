@@ -1,5 +1,5 @@
 # endpoints.yml
 action_endpoint:
-  url: "http://localhost:5055/webhook"
-  # url: ${ACTION_ENDPOINT_URL} 
+  # url: "http://localhost:5055/webhook"
+  url: ${ACTION_ENDPOINT_URL} 
   # RASA reemplazará esto con el valor de la variable de entorno
