@@ -1,0 +1,53 @@
+# render.yaml
+
+services:
+  # Servicio 1: Servidor de Acciones de RASA
+  # Usara el Dockerfile que esta en la carpeta 'actions'
+  - type: web
+    name: rasa-actions
+    env: docker
+    repo: https://github.com/TU_USUARIO/TU_REPOSITORIO.git # ¡CAMBIA ESTO!
+    dockerfilePath: ./actions/Dockerfile
+    dockerContext: ./actions
+    # Render asignará un puerto, pero internamente usamos 5055
+    # La variable PORT es establecida por Render
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        fromSecret: true # Lo configurarás en el dashboard de Render
+
+  # Servicio 2: Servidor Principal de RASA
+  # Usa el entorno nativo de Python de Render
+  - type: web
+    name: rasa-server
+    env: python
+    repo: https://github.com/TU_USUARIO/TU_REPOSITORIO.git # ¡CAMBIA ESTO!
+    plan: starter # Los modelos de RASA pueden necesitar más RAM. 'starter' es un buen comienzo.
+    buildCommand: |
+      pip install -r requirements.txt
+      rasa train
+    startCommand: rasa run --enable-api --cors "*" --port $PORT
+    healthCheckPath: /
+    envVars:
+      # Conectamos este servicio con el servidor de acciones
+      # 'rasa-actions' es el nombre del servicio que definimos arriba
+      - key: ACTION_ENDPOINT_URL
+        value: http://rasa-actions:5055/webhook
+
+  # Servicio 3: Aplicación Flask (Interfaz con el usuario)
+  # Usa el entorno nativo de Python de Render
+  - type: web
+    name: flask-app
+    env: python
+    repo: https://github.com/TU_USUARIO/TU_REPOSITORIO.git # ¡CAMBIA ESTO!
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --worker-class gevent --bind 0.0.0.0:$PORT app:app
+    envVars:
+      - key: FLASK_APP
+        value: app.py
+      - key: FLASK_SECRET_KEY
+        generateValue: true # Render generará una clave segura
+      # Conectamos Flask con el servidor principal de RASA
+      # 'rasa-server' es el nombre del servicio que definimos arriba
+      - key: RASA_API_URL
+        value: http://rasa-server:5005/webhooks/rest/webhook

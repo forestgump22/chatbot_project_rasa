@@ -17,4 +17,3 @@ models/*.tar.gz
 *.md
 # Carpetas de VSCode y otros editores
 .vscode/
-.idea/

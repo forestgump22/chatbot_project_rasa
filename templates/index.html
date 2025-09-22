@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Asistente TecnoTienda</title>
+    <title>Asistente Multi-Dominio</title>
     <style>
         body { font-family: Arial, sans-serif; background: #f4f4f4; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }
         #chat-container { width: 400px; height: 600px; background: white; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); display: flex; flex-direction: column; }
@@ -12,6 +12,21 @@
         .message { padding: 10px 15px; border-radius: 18px; max-width: 80%; line-height: 1.4; }
         .user-message { background: #007bff; color: white; align-self: flex-end; }
         .bot-message { background: #e9e9eb; color: #333; align-self: flex-start; }
+        
+        /* --- ESTILOS PARA EL INTERRUPTOR --- */
+        #nlu-toggle-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px;
+            background-color: #f0f0f0;
+            font-size: 0.8em;
+            color: #555;
+            border-bottom: 1px solid #ddd;
+        }
+        #nlu-toggle-container label { margin: 0 10px; }
+        #nlu-toggle { margin-left: 5px; cursor: pointer; }
+
         #input-container { display: flex; padding: 15px; border-top: 1px solid #ddd; }
         #user-input { flex-grow: 1; border: 1px solid #ccc; border-radius: 20px; padding: 10px 15px; outline: none; }
         #send-btn { background: #007bff; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; margin-left: 10px; cursor: pointer; font-size: 1.2em; }
@@ -19,9 +34,14 @@
 </head>
 <body>
     <div id="chat-container">
-        <div id="chat-header">Asistente TecnoTienda</div>
+        <div id="chat-header">Asistente Multi-Dominio</div>
+        <div id="nlu-toggle-container">
+            <label for="nlu-toggle">Modo Rápido (RASA)</label>
+            <input type="checkbox" id="nlu-toggle">
+            <label for="nlu-toggle">Modo Inteligente (Gemini)</label>
+        </div>
         <div id="chat-box">
-             <div class="bot-message">¡Hola! Soy tu asistente virtual. ¿Cómo puedo ayudarte hoy?</div>
+             <div class="bot-message">¡Hola! Soy tu asistente virtual. Elige un modo de comprensión arriba y dime cómo puedo ayudarte.</div>
         </div>
         <div id="input-container">
             <input type="text" id="user-input" placeholder="Escribe tu mensaje...">
@@ -33,17 +53,17 @@
         const chatBox = document.getElementById('chat-box');
         const userInput = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
+        const nluToggle = document.getElementById('nlu-toggle');
 
-        // Función para añadir mensajes al chat
         function addMessage(text, sender) {
             const messageDiv = document.createElement('div');
             messageDiv.classList.add('message', `${sender}-message`);
-            messageDiv.textContent = text;
+            // Para renderizar saltos de línea correctamente
+            messageDiv.innerHTML = text.replace(/\n/g, '<br>');
             chatBox.appendChild(messageDiv);
-            chatBox.scrollTop = chatBox.scrollHeight; // Auto-scroll
+            chatBox.scrollTop = chatBox.scrollHeight;
         }
 
-        // Función para enviar mensaje al backend
         async function sendMessage() {
             const message = userInput.value.trim();
             if (!message) return;
@@ -51,11 +71,18 @@
             addMessage(message, 'user');
             userInput.value = '';
 
+            // Determinar el modo NLU según el interruptor
+            const nluMode = nluToggle.checked ? 'gemini' : 'rasa';
+
             try {
                 const response = await fetch('http://localhost:5000/webhook', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: message, sender: 'user123' })
+                    body: JSON.stringify({
+                        message: message,
+                        sender: 'user123',
+                        metadata: { nlu_mode: nluMode } 
+                    })
                 });
 
                 if (!response.ok) {

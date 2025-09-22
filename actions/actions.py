@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 from rasa_sdk import Action, Tracker
 from rasa_sdk.executor import CollectingDispatcher
-from rasa_sdk.events import SlotSet, FollowupAction # Importar FollowupAction
+from rasa_sdk.events import SlotSet, FollowupAction
 
 import google.generativeai as genai
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class GeminiService:
     def __init__(self):
         self.api_key = os.getenv('GEMINI_API_KEY')
-        self.model_name = os.getenv('GEMINI_MODEL', 'gemini-pro')
+        self.model_name = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
         
         if not self.api_key:
             logger.error("GEMINI_API_KEY no encontrada en variables de entorno. Las respuestas de IA generativa no funcionarán.")
@@ -373,19 +373,33 @@ class ActionInformacionMedicamento(Action):
         return "action_informacion_medicamento"
 
     def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        
+        # --- LOG DE DEPURACIÓN AÑADIDO ---
+        logger.info(f"--- Ejecutando ActionInformacionMedicamento ---")
+
         medicamento = tracker.get_slot("medicamento")
+        
+        # --- LOG DE DEPURACIÓN AÑADIDO ---
+        logger.info(f"Medicamento extraído del slot: {medicamento}")
 
         if not medicamento:
+            logger.warning("No se encontró medicamento en el slot. Enviando pregunta de vuelta.")
             dispatcher.utter_message(text="¿De qué medicamento te gustaría obtener información?")
             return []
         
-        # --- USO DE GEMINI PARA INFORMACIÓN DE MEDICAMENTOS ---
         prompt = f"""
         Eres un asistente de salud que proporciona información general sobre medicamentos. NO ERES UN MÉDICO, NO DIAGNOSTICAS NI PRESCRIBES.
         Explica brevemente para qué sirve y cuáles son los usos comunes del medicamento: {medicamento}.
         Aclara que siempre se debe consultar a un médico o farmacéutico antes de tomar cualquier medicamento.
         """
+        
+        # --- LOG DE DEPURACIÓN AÑADIDO ---
+        logger.info(f"Enviando prompt a Gemini para el medicamento: {medicamento}")
         info_medicamento = gemini_service.generate_response(prompt, domain="salud")
+        
+        # --- LOG DE DEPURACIÓN AÑADIDO ---
+        logger.info(f"Respuesta de Gemini recibida: {info_medicamento[:100]}...") # Mostramos los primeros 100 caracteres
+        
         dispatcher.utter_message(text=info_medicamento)
         return [SlotSet("medicamento", None)]
 

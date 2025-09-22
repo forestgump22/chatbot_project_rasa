@@ -14,6 +14,7 @@ stories:
   - intent: ask_help
   - action: action_provide_help
 
+# --- HISTORIAS DE CAMBIO DE DOMINIO CORREGIDAS ---
 - story: Cambiar de dominio a e-commerce
   steps:
   - intent: switch_domain
@@ -21,8 +22,8 @@ stories:
     - dominio: "ecommerce"
   - slot_was_set:
     - current_domain: "ecommerce"
-  - utter_greet_ecommerce # Respuesta específica, si la tuviéramos
-  - action: action_listen # Para que el bot espere el siguiente comando
+  - action: action_set_domain
+  - action: action_listen
 
 - story: Cambiar de dominio a banca
   steps:
@@ -31,7 +32,7 @@ stories:
     - dominio: "banca"
   - slot_was_set:
     - current_domain: "banca"
-  - utter_greet_banca # Respuesta específica
+  - action: action_set_domain
   - action: action_listen
 
 - story: Cambiar de dominio a salud
@@ -41,7 +42,7 @@ stories:
     - dominio: "salud"
   - slot_was_set:
     - current_domain: "salud"
-  - utter_greet_salud # Respuesta específica
+  - action: action_set_domain
   - action: action_listen
 
 # === E-commerce Stories ===
@@ -85,10 +86,11 @@ stories:
   - intent: bloquear_tarjeta
   - action: action_bloquear_tarjeta
 
+# ¡OJO! Esta acción no la habíamos definido en el domain.yml.
 - story: Contactar asesor financiero
   steps:
   - intent: asesor_financiero
-  - action: action_contactar_asesor_financiero
+  - action: utter_connect_financial_advisor
 
 # === Fin Banca Stories ===
 
@@ -119,3 +121,10 @@ stories:
   steps:
   - intent: pregunta_abierta
   - action: accion_pregunta_gemini
+
+# --- HISTORIA DE FALLBACK ---
+# Esto es opcional pero bueno tenerlo. Una historia que maneje el fallback.
+- story: NLU Fallback
+  steps:
+  - intent: nlu_fallback
+  - action: action_default_fallback
