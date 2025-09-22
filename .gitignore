@@ -1,0 +1,20 @@
+# Archivos de entorno virtual
+venv/
+.venv/
+
+# Archivos de caché de Python
+__pycache__/
+*.pyc
+
+# Modelos entrenados de RASA
+# Entrenaremos los modelos en la nube durante el despliegue
+models/*.tar.gz
+
+# Archivos de entorno local
+*.env
+
+.rasa
+*.md
+# Carpetas de VSCode y otros editores
+.vscode/
+.idea/

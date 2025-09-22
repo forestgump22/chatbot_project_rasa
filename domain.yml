@@ -1,0 +1,236 @@
+# domain.yml
+version: "3.1"
+
+intents:
+  - greet
+  - goodbye
+  - affirm
+  - deny
+  - ask_help
+  - switch_domain # Nuevo intent para cambiar de contexto
+
+  # === E-commerce ===
+  - consultar_producto:
+      use_entities: [producto]
+  - verificar_stock:
+      use_entities: [producto]
+  - estado_pedido:
+      use_entities: [numero_pedido]
+  - recomendar_producto:
+      use_entities: [categoria, interes] # Nuevas entidades para recomendaciones
+  - finalizar_compra
+  - pagar_pedido
+  # === Fin E-commerce ===
+
+  # === Banca ===
+  - consultar_saldo:
+      use_entities: [tipo_cuenta]
+  - realizar_transferencia:
+      use_entities: [cantidad, cuenta_destino]
+  - bloquear_tarjeta:
+      use_entities: [tipo_tarjeta]
+  - asesor_financiero
+  # === Fin Banca ===
+
+  # === Salud ===
+  - agendar_cita:
+      use_entities: [especialidad, fecha_hora]
+  - consultar_sintoma:
+      use_entities: [sintoma]
+  - informacion_medicamento:
+      use_entities: [medicamento]
+  - contacto_emergencia
+  # === Fin Salud ===
+
+  - pregunta_abierta # General para Gemini
+
+entities:
+  - producto
+  - numero_pedido
+  - categoria
+  - interes
+  - tipo_cuenta
+  - cantidad
+  - cuenta_destino
+  - tipo_tarjeta
+  - especialidad
+  - fecha_hora
+  - sintoma
+  - medicamento
+  - dominio # Para guardar en qué dominio estamos hablando
+
+slots:
+  producto:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: producto
+  numero_pedido:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: numero_pedido
+  categoria:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: categoria
+  interes:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: interes
+  tipo_cuenta:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: tipo_cuenta
+  cantidad:
+    type: float
+    mappings:
+    - type: from_entity
+      entity: cantidad
+  cuenta_destino:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: cuenta_destino
+  tipo_tarjeta:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: tipo_tarjeta
+  especialidad:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: especialidad
+  fecha_hora:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: fecha_hora
+  sintoma:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: sintoma
+  medicamento:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: medicamento
+  
+  # Slot para manejar el dominio actual de la conversación
+  current_domain:
+    type: text
+    initial_value: "general" # Puede empezar en general o en ecommerce por defecto
+    mappings:
+    - type: from_entity
+      entity: dominio # Si el usuario dice "Quiero hablar de [banca](dominio)"
+      intent: switch_domain # Solo mapear si el intent es switch_domain
+    - type: from_intent
+      intent: consultar_producto
+      value: "ecommerce"
+    - type: from_intent
+      intent: verificar_stock
+      value: "ecommerce"
+    - type: from_intent
+      intent: estado_pedido
+      value: "ecommerce"
+    - type: from_intent
+      intent: recomendar_producto
+      value: "ecommerce"
+    - type: from_intent
+      intent: finalizar_compra
+      value: "ecommerce"
+    - type: from_intent
+      intent: pagar_pedido
+      value: "ecommerce"
+    - type: from_intent
+      intent: consultar_saldo
+      value: "banca"
+    - type: from_intent
+      intent: realizar_transferencia
+      value: "banca"
+    - type: from_intent
+      intent: bloquear_tarjeta
+      value: "banca"
+    - type: from_intent
+      intent: asesor_financiero
+      value: "banca"
+    - type: from_intent
+      intent: agendar_cita
+      value: "salud"
+    - type: from_intent
+      intent: consultar_sintoma
+      value: "salud"
+    - type: from_intent
+      intent: informacion_medicamento
+      value: "salud"
+    - type: from_intent
+      intent: contacto_emergencia
+      value: "salud"
+
+
+responses:
+  utter_greet:
+  - text: "¡Hola! Soy tu asistente virtual. ¿En qué te puedo ayudar hoy?"
+  utter_goodbye:
+  - text: "¡Adiós! Que tengas un excelente día."
+  utter_iamabot:
+  - text: "Soy un bot, creado con RASA y potenciado con IA generativa."
+  utter_ask_help:
+  - text: "Puedo ayudarte con temas de **e-commerce (compras, pedidos)**, **banca (saldos, transferencias)** o **salud (citas, síntomas)**. ¿De qué quieres hablar?"
+  utter_please_rephrase:
+  - text: "No te he entendido bien. ¿Podrías reformular tu pregunta?"
+  utter_ask_product:
+  - text: "Claro, ¿qué producto te interesa?"
+  utter_ask_order_number:
+  - text: "Por supuesto, ¿cuál es tu número de pedido?"
+  utter_ask_recommendation_criteria:
+  - text: "Para recomendarte algo, ¿qué tipo de productos te interesan o qué uso le darías?"
+  utter_confirm_purchase:
+  - text: "¿Estás seguro que deseas finalizar tu compra?"
+  utter_ask_payment_details:
+  - text: "Para el pago, ¿con qué método te gustaría proceder?"
+
+  # --- Respuestas de Banca ---
+  utter_ask_account_type:
+  - text: "¿De qué tipo de cuenta te gustaría consultar el saldo (ahorros, corriente, inversiones)?"
+  utter_ask_transfer_details:
+  - text: "Necesito la cantidad a transferir y la cuenta de destino."
+  utter_ask_card_type:
+  - text: "¿Qué tipo de tarjeta quieres bloquear (crédito, débito)?"
+  utter_connect_financial_advisor:
+  - text: "Te pondré en contacto con un asesor financiero. Por favor, espera un momento."
+
+  # --- Respuestas de Salud ---
+  utter_ask_appointment_details:
+  - text: "¿Qué especialidad buscas y para qué fecha/hora te gustaría agendar tu cita?"
+  utter_ask_symptom_details:
+  - text: "Por favor, descríbeme tus síntomas con más detalle."
+  utter_ask_medication_name:
+  - text: "¿De qué medicamento te gustaría obtener información?"
+  utter_emergency_contact:
+  - text: "Si es una emergencia, por favor llama al 911 (o el número de emergencia local) inmediatamente. No soy un profesional médico."
+  
+  utter_ask_domain_clarification:
+  - text: "¿Sobre qué tema quieres hablar (e-commerce, banca, salud)?"
+
+actions:
+- action_set_domain # Nueva acción para manejar el cambio de dominio
+- action_verificar_stock
+- action_consultar_estado_pedido
+- action_recomendar_producto
+- action_finalizar_compra
+- action_pagar_pedido
+- action_consultar_saldo
+- action_realizar_transferencia
+- action_bloquear_tarjeta
+- action_agendar_cita
+- action_consultar_sintoma
+- action_informacion_medicamento
+- action_contactar_emergencia
+- accion_pregunta_gemini
+- action_provide_help

@@ -1,0 +1,121 @@
+# data/stories.yml
+version: "3.1"
+
+stories:
+- story: Saludo y despedida
+  steps:
+  - intent: greet
+  - action: utter_greet
+  - intent: goodbye
+  - action: utter_goodbye
+
+- story: Pedir ayuda general
+  steps:
+  - intent: ask_help
+  - action: action_provide_help
+
+- story: Cambiar de dominio a e-commerce
+  steps:
+  - intent: switch_domain
+    entities:
+    - dominio: "ecommerce"
+  - slot_was_set:
+    - current_domain: "ecommerce"
+  - utter_greet_ecommerce # Respuesta específica, si la tuviéramos
+  - action: action_listen # Para que el bot espere el siguiente comando
+
+- story: Cambiar de dominio a banca
+  steps:
+  - intent: switch_domain
+    entities:
+    - dominio: "banca"
+  - slot_was_set:
+    - current_domain: "banca"
+  - utter_greet_banca # Respuesta específica
+  - action: action_listen
+
+- story: Cambiar de dominio a salud
+  steps:
+  - intent: switch_domain
+    entities:
+    - dominio: "salud"
+  - slot_was_set:
+    - current_domain: "salud"
+  - utter_greet_salud # Respuesta específica
+  - action: action_listen
+
+# === E-commerce Stories ===
+- story: Consultar stock de producto
+  steps:
+  - intent: verificar_stock
+  - action: action_verificar_stock
+
+- story: Consultar estado de pedido
+  steps:
+  - intent: estado_pedido
+  - action: action_consultar_estado_pedido
+
+- story: Recomendar producto
+  steps:
+  - intent: recomendar_producto
+  - action: action_recomendar_producto
+
+- story: Finalizar compra
+  steps:
+  - intent: finalizar_compra
+  - action: action_finalizar_compra
+  - intent: affirm
+  - action: action_pagar_pedido
+
+# === Fin E-commerce Stories ===
+
+# === Banca Stories ===
+- story: Consultar saldo
+  steps:
+  - intent: consultar_saldo
+  - action: action_consultar_saldo
+
+- story: Realizar transferencia
+  steps:
+  - intent: realizar_transferencia
+  - action: action_realizar_transferencia
+
+- story: Bloquear tarjeta
+  steps:
+  - intent: bloquear_tarjeta
+  - action: action_bloquear_tarjeta
+
+- story: Contactar asesor financiero
+  steps:
+  - intent: asesor_financiero
+  - action: action_contactar_asesor_financiero
+
+# === Fin Banca Stories ===
+
+# === Salud Stories ===
+- story: Agendar cita
+  steps:
+  - intent: agendar_cita
+  - action: action_agendar_cita
+
+- story: Consultar síntoma
+  steps:
+  - intent: consultar_sintoma
+  - action: action_consultar_sintoma
+
+- story: Información medicamento
+  steps:
+  - intent: informacion_medicamento
+  - action: action_informacion_medicamento
+
+- story: Contacto emergencia
+  steps:
+  - intent: contacto_emergencia
+  - action: action_contactar_emergencia
+
+# === Fin Salud Stories ===
+
+- story: Pregunta abierta general
+  steps:
+  - intent: pregunta_abierta
+  - action: accion_pregunta_gemini

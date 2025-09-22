@@ -1,22 +1,161 @@
+# data/nlu.yml
 version: "3.1"
 
-nlu: 
+nlu:
 - intent: greet
   examples: |
-    - hey
-    - hello
-    - hi 
     - hola
-    - hello there
-    - good
+    - buenas
+    - hey
+    - buenos días
+
 - intent: goodbye
   examples: |
-    - good by
-    - adios
-    - good night
+    - adiós
+    - hasta luego
     - bye
+    - nos vemos
+
 - intent: affirm
   examples: |
-    - si
-    - yes
-    - indeed
+    - sí
+    - claro
+    - por supuesto
+    - exacto
+    - correcto
+
+- intent: deny
+  examples: |
+    - no
+    - para nada
+    - no lo creo
+    - incorrecto
+
+- intent: ask_help
+  examples: |
+    - ¿qué puedes hacer?
+    - ayuda
+    - ¿en qué me puedes ayudar?
+    - ¿cómo funciona esto?
+
+- intent: switch_domain
+  examples: |
+    - quiero hablar de [banca](dominio)
+    - cambiemos a [salud](dominio)
+    - necesito ayuda con [e-commerce](dominio)
+    - mi consulta es de [banca](dominio)
+    - pasemos al tema de [salud](dominio)
+    - hablemos de [compras](dominio:ecommerce)
+
+# === E-commerce ===
+- intent: consultar_producto
+  examples: |
+    - háblame del [iPhone 15](producto)
+    - quiero información sobre la [laptop gamer Alienware](producto)
+    - ¿qué características tiene el [Samsung Galaxy S24](producto)?
+    - detalles del [teclado mecánico Keychron](producto)
+    - especificaciones del [monitor ultrawide](producto)
+
+- intent: verificar_stock
+  examples: |
+    - ¿tienen stock del [iPhone 15](producto)?
+    - ¿hay [monitores 4K](producto) disponibles?
+    - ¿está disponible la [tarjeta gráfica RTX 4080](producto)?
+    - stock de [auriculares bluetooth](producto)
+
+- intent: estado_pedido
+  examples: |
+    - ¿dónde está mi pedido?
+    - quiero saber el estado de mi orden
+    - rastrear mi pedido [123-ABC-789](numero_pedido)
+    - ¿cómo va el envío [XYZ-987-654](numero_pedido)?
+    - mi orden [ORD-001](numero_pedido)
+
+- intent: recomendar_producto
+  examples: |
+    - recomiéndame una [laptop](categoria) para [estudios](interes)
+    - qué [teléfono](categoria) me recomiendas para [fotografía](interes)
+    - busco una [consola](categoria) para [juegos multijugador](interes)
+    - dame opciones de [cámaras](categoria)
+    - qué [audífonos](categoria) son buenos para [hacer ejercicio](interes)
+
+- intent: finalizar_compra
+  examples: |
+    - quiero finalizar mi compra
+    - proceder al pago
+    - comprar ahora
+    - checkout
+
+- intent: pagar_pedido
+  examples: |
+    - quiero pagar mi pedido
+    - cómo puedo pagar
+    - opciones de pago
+
+# === Fin E-commerce ===
+
+# === Banca ===
+- intent: consultar_saldo
+  examples: |
+    - cuál es mi saldo
+    - cuánto dinero tengo
+    - saldo de mi cuenta de [ahorros](tipo_cuenta)
+    - ver saldo de [inversiones](tipo_cuenta)
+
+- intent: realizar_transferencia
+  examples: |
+    - quiero hacer una transferencia
+    - transferir [1000](cantidad) a la cuenta [1234567890](cuenta_destino)
+    - enviar [500](cantidad) pesos a [Maria Perez](cuenta_destino)
+
+- intent: bloquear_tarjeta
+  examples: |
+    - quiero bloquear mi tarjeta
+    - bloquear mi tarjeta de [crédito](tipo_tarjeta)
+    - perdí mi tarjeta de [débito](tipo_tarjeta)
+
+- intent: asesor_financiero
+  examples: |
+    - necesito hablar con un asesor
+    - quiero contactar a un experto financiero
+    - ayúdame con mis finanzas
+
+# === Fin Banca ===
+
+# === Salud ===
+- intent: agendar_cita
+  examples: |
+    - quiero agendar una cita
+    - reservar con un [dentista](especialidad)
+    - cita para el [viernes a las 10am](fecha_hora)
+    - necesito ver a un [cardiólogo](especialidad) el [próximo martes](fecha_hora)
+
+- intent: consultar_sintoma
+  examples: |
+    - me duele la [cabeza](sintoma)
+    - tengo [fiebre](sintoma) y [tos](sintoma)
+    - qué significa tener [mareos](sintoma)
+    - me siento [mal](sintoma)
+
+- intent: informacion_medicamento
+  examples: |
+    - información sobre [ibuprofeno](medicamento)
+    - para qué sirve el [paracetamol](medicamento)
+    - efectos secundarios de [amoxicilina](medicamento)
+
+- intent: contacto_emergencia
+  examples: |
+    - es una emergencia
+    - necesito ayuda urgente
+    - qué hago en una emergencia
+    - llamar a emergencias
+
+# === Fin Salud ===
+
+- intent: pregunta_abierta
+  examples: |
+    - explícame qué es la fotosíntesis
+    - cuál es la capital de Francia
+    - dame una historia corta
+    - cómo funciona un agujero negro
+    - qué es la IA

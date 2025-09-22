@@ -1,0 +1,14 @@
+.
+├── actions
+│   └── actions.py
+├── data
+│   ├── nlu.yml
+│   └── stories.yml
+├── templates
+│   └── index.html
+├── .env
+├── app.py
+├── config.yml
+├── domain.yml
+├── endpoints.yml
+└── requirements.txt
