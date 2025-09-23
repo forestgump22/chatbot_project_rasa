@@ -10,7 +10,7 @@ COPY ./requirements.txt .
 
 # Instala las dependencias adicionales que necesitan tus acciones (como google-generativeai)
 # --no-cache-dir reduce el tamaño de la imagen final
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
 # Copia el resto del código de las acciones
 COPY . .
