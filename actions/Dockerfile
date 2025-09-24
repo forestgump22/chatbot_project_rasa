@@ -7,9 +7,7 @@ WORKDIR /app
 # Copia solo el código de tus acciones
 COPY . .
 
-# Instala las dependencias adicionales que necesitan tus acciones
-# (principalmente para conectarse a Gemini)
-RUN pip install --no-cache-dir google-generativeai python-dotenv
+RUN pip install --user --no-cache-dir google-generativeai python-dotenv
 
 # El comando para iniciar el servidor de acciones. Render asignará el puerto.
 CMD ["rasa", "sdk", "--actions", "actions", "-p", "$PORT", "--cors", "*"]
