@@ -12,4 +12,4 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-CMD ["sh", "-c", "rasa run --enable-api --cors \"*\" --port $PORT --i 0.0.0.0"]
+CMD ["sh", "-c", "rasa run --enable-api --cors \"*\" --port $PORT -i 0.0.0.0"]
