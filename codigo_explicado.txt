@@ -1,0 +1,1808 @@
+
+================================================================================
+// En la ruta '.' está el archivo con nombre 'app.py'
+================================================================================
+
+from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
+import requests
+import logging
+import os
+from dotenv import load_dotenv
+import json
+import time
+import google.generativeai as genai
+
+load_dotenv()
+
+app = Flask(__name__)
+CORS(app)
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'default-secret-key-for-dev')
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- CONFIGURACIÓN ---
+RASA_API_URL = os.getenv("RASA_API_URL", "http://localhost:5005/webhooks/rest/webhook")
+
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+
+# Configuración de Gemini con manejo de errores
+try:
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+        logger.info("Modelo Gemini cargado exitosamente.")
+    else:
+        gemini_model = None
+        logger.warning("GEMINI_API_KEY no encontrada. El modo NLU de Gemini no estará disponible.")
+except Exception as e:
+    gemini_model = None
+    logger.error(f"Error al configurar Gemini: {e}. El modo NLU de Gemini no estará disponible.")
+
+# --- PLANTILLA PARA NLU CON GEMINI (PROMPT ENGINEERING) ---
+INTENT_PROMPT_TEMPLATE = """
+Eres un motor de Comprensión de Lenguaje Natural (NLU) altamente preciso. Tu tarea es analizar el texto del usuario y extraer su intención y entidades en formato JSON.
+
+REGLAS CRÍTICAS:
+1.  **PRIORIDAD MÁXIMA:** Si el texto del usuario indica una emergencia médica, una situación de vida o muerte, o menciona síntomas graves como "infarto", "derrame cerebral", "no puedo respirar", etc., DEBES clasificar la intención como "contacto_emergencia", sin importar qué más diga.
+2.  El JSON de salida DEBE tener una clave "intent" y una clave "entities".
+3.  La clave "intent" DEBE ser uno de los siguientes valores: {intents_list}.
+4.  La clave "entities" DEBE ser una lista de objetos JSON, cada uno con una clave "entity" y una clave "value".
+5.  Las entidades posibles son: {entities_list}.
+6.  Si después de aplicar la regla de emergencia, no puedes identificar una intención de la lista con confianza, asigna el intent "nlu_fallback".
+7.  Si no encuentras entidades, devuelve una lista vacía [].
+8.  Tu respuesta DEBE contener únicamente el objeto JSON y nada más.
+
+### EJEMPLO DE PRIORIDAD MÁXIMA
+Texto: "me duele el pecho y creo que estoy teniendo un infarto"
+JSON: {{"intent": "contacto_emergencia", "entities": []}}
+
+### TAREA
+Texto del usuario: "{user_message}"
+JSON:
+"""
+
+# Definición centralizada de intenciones y entidades conocidas por el sistema RASA
+VALID_INTENTS = [
+    "greet", "goodbye", "affirm", "deny", "ask_help", "switch_domain",
+    "consultar_producto", "verificar_stock", "estado_pedido", "recomendar_producto", "finalizar_compra", "pagar_pedido",
+    "consultar_saldo", "realizar_transferencia", "bloquear_tarjeta", "asesor_financiero",
+    "agendar_cita", "consultar_sintoma", "informacion_medicamento", "contacto_emergencia",
+    "pregunta_abierta", "nlu_fallback"
+]
+VALID_ENTITIES = [
+    "producto", "numero_pedido", "categoria", "interes", "tipo_cuenta", "cantidad",
+    "cuenta_destino", "tipo_tarjeta", "especialidad", "fecha_hora", "sintoma", "medicamento", "dominio"
+]
+
+
+def get_intent_from_gemini_robust(user_message, max_retries=2):
+    """
+    Función robusta para obtener la intención de Gemini, con reintentos y validación de JSON.
+    """
+    if not gemini_model:
+        logger.error("Se intentó usar el NLU de Gemini, pero el modelo no está disponible.")
+        return None
+
+    prompt = INTENT_PROMPT_TEMPLATE.format(
+        intents_list=json.dumps(VALID_INTENTS),
+        entities_list=json.dumps(VALID_ENTITIES),
+        user_message=user_message
+    )
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Intento {attempt + 1} de NLU con Gemini.")
+            response = gemini_model.generate_content(prompt)
+            
+            # Limpiar la respuesta para extraer solo el JSON
+            cleaned_response = response.text.strip().replace("```json", "").replace("```", "")
+            
+            # Validar el JSON
+            parsed_json = json.loads(cleaned_response)
+            
+            # Validar la estructura del JSON
+            if "intent" in parsed_json and "entities" in parsed_json and isinstance(parsed_json["entities"], list):
+                logger.info(f"NLU de Gemini exitoso: {parsed_json}")
+                return parsed_json
+            else:
+                logger.warning(f"Respuesta de Gemini no tiene la estructura esperada: {cleaned_response}")
+
+        except json.JSONDecodeError:
+            logger.warning(f"Respuesta de Gemini no es un JSON válido: {response.text}")
+        except Exception as e:
+            logger.error(f"Error inesperado en la llamada a Gemini: {e}")
+        
+        # Esperar un poco antes de reintentar
+        time.sleep(0.5)
+
+    logger.error(f"Fallaron todos los intentos de obtener NLU de Gemini para el mensaje: '{user_message}'")
+    return None # Devolver None si todos los intentos fallan
+
+
+def get_rasa_response(sender_id, message):
+    """
+    Función para enviar un mensaje a RASA y obtener la respuesta.
+    """
+    payload = {"sender": sender_id, "message": message}
+    try:
+        response = requests.post(RASA_API_URL, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error de conexión con el servidor de RASA: {e}")
+        return [{"text": "Lo siento, no puedo conectarme con el asistente en este momento."}]
+    except Exception as e:
+        logger.error(f"Ocurrió un error inesperado al comunicarse con RASA: {e}")
+        return [{"text": "Ha ocurrido un error inesperado."}]
+
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
+    user_message = data['message']
+    sender_id = data.get('sender', 'user')
+    # Extraer el modo NLU de los metadatos, con 'rasa' como valor por defecto
+    nlu_mode = data.get('metadata', {}).get('nlu_mode', 'rasa')
+
+    logger.info(f"Mensaje: '{user_message}', Sender: '{sender_id}', Modo NLU: '{nlu_mode}'")
+
+    if nlu_mode == 'gemini':
+        nlu_data = get_intent_from_gemini_robust(user_message)
+        
+        # Si Gemini falla, cambiamos al modo RASA como fallback para esta petición
+        if nlu_data is None:
+            logger.warning("Fallback a NLU de RASA debido a un error de Gemini.")
+            rasa_messages = get_rasa_response(sender_id, user_message)
+            # Añadir un mensaje para informar al usuario del cambio
+            rasa_messages.insert(0, {"text": "(Hubo un problema con el modo inteligente, usando el modo rápido para esta respuesta.)"})
+            return jsonify(rasa_messages)
+
+        # Si Gemini tiene éxito, construimos el mensaje para RASA Core
+        intent_name = nlu_data.get("intent", "nlu_fallback")
+        entities = nlu_data.get("entities", [])
+        
+        if entities:
+            entity_payload = json.dumps({entity['entity']: entity['value'] for entity in entities if 'entity' in entity and 'value' in entity})
+            rasa_message = f"/{intent_name}{entity_payload}"
+        else:
+            rasa_message = f"/{intent_name}"
+        
+        logger.info(f"Inyectando a RASA Core: {rasa_message}")
+        rasa_messages = get_rasa_response(sender_id, rasa_message)
+
+    else: # nlu_mode == 'rasa'
+        logger.info("Usando NLU de RASA.")
+        rasa_messages = get_rasa_response(sender_id, user_message)
+        
+    return jsonify(rasa_messages)
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
+================================================================================
+// En la ruta '.' está el archivo con nombre 'codigo_explicado.txt'
+================================================================================
+
+
+================================================================================
+// En la ruta '.' está el archivo con nombre 'config.yml'
+================================================================================
+
+# config.yml
+recipe: default.v1
+language: es
+
+pipeline:
+- name: WhitespaceTokenizer
+- name: RegexFeaturizer
+- name: LexicalSyntacticFeaturizer
+- name: CountVectorsFeaturizer
+- name: CountVectorsFeaturizer
+  analyzer: "char_wb"
+  min_ngram: 1
+  max_ngram: 4
+- name: DIETClassifier
+  epochs: 100
+- name: EntitySynonymMapper
+- name: ResponseSelector
+  epochs: 100
+
+policies:
+- name: MemoizationPolicy
+- name: RulePolicy
+- name: UnexpecTEDIntentPolicy
+  max_history: 5
+  epochs: 100
+- name: TEDPolicy
+  max_history: 5
+  epochs: 100
+assistant_id: 20250922-150757-bare-ticket
+
+================================================================================
+// En la ruta '.' está el archivo con nombre 'domain.yml'
+================================================================================
+
+# domain.yml
+version: "3.1"
+
+intents:
+  - greet
+  - goodbye
+  - affirm
+  - deny
+  - ask_help
+  - switch_domain # Nuevo intent para cambiar de contexto
+
+  # === E-commerce ===
+  - consultar_producto:
+      use_entities: [producto]
+  - verificar_stock:
+      use_entities: [producto]
+  - estado_pedido:
+      use_entities: [numero_pedido]
+  - recomendar_producto:
+      use_entities: [categoria, interes] # Nuevas entidades para recomendaciones
+  - finalizar_compra
+  - pagar_pedido
+  # === Fin E-commerce ===
+
+  # === Banca ===
+  - consultar_saldo:
+      use_entities: [tipo_cuenta]
+  - realizar_transferencia:
+      use_entities: [cantidad, cuenta_destino]
+  - bloquear_tarjeta:
+      use_entities: [tipo_tarjeta]
+  - asesor_financiero
+  # === Fin Banca ===
+
+  # === Salud ===
+  - agendar_cita:
+      use_entities: [especialidad, fecha_hora]
+  - consultar_sintoma:
+      use_entities: [sintoma]
+  - informacion_medicamento:
+      use_entities: [medicamento]
+  - contacto_emergencia
+  # === Fin Salud ===
+
+  - pregunta_abierta # General para Gemini
+
+entities:
+  - producto
+  - numero_pedido
+  - categoria
+  - interes
+  - tipo_cuenta
+  - cantidad
+  - cuenta_destino
+  - tipo_tarjeta
+  - especialidad
+  - fecha_hora
+  - sintoma
+  - medicamento
+  - dominio # Para guardar en qué dominio estamos hablando
+
+slots:
+  producto:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: producto
+  numero_pedido:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: numero_pedido
+  categoria:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: categoria
+  interes:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: interes
+  tipo_cuenta:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: tipo_cuenta
+  cantidad:
+    type: float
+    mappings:
+    - type: from_entity
+      entity: cantidad
+  cuenta_destino:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: cuenta_destino
+  tipo_tarjeta:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: tipo_tarjeta
+  especialidad:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: especialidad
+  fecha_hora:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: fecha_hora
+  sintoma:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: sintoma
+  medicamento:
+    type: text
+    mappings:
+    - type: from_entity
+      entity: medicamento
+  
+  # Slot para manejar el dominio actual de la conversación
+  current_domain:
+    type: text
+    initial_value: "general" # Puede empezar en general o en ecommerce por defecto
+    mappings:
+    - type: from_entity
+      entity: dominio # Si el usuario dice "Quiero hablar de [banca](dominio)"
+      intent: switch_domain # Solo mapear si el intent es switch_domain
+    - type: from_intent
+      intent: consultar_producto
+      value: "ecommerce"
+    - type: from_intent
+      intent: verificar_stock
+      value: "ecommerce"
+    - type: from_intent
+      intent: estado_pedido
+      value: "ecommerce"
+    - type: from_intent
+      intent: recomendar_producto
+      value: "ecommerce"
+    - type: from_intent
+      intent: finalizar_compra
+      value: "ecommerce"
+    - type: from_intent
+      intent: pagar_pedido
+      value: "ecommerce"
+    - type: from_intent
+      intent: consultar_saldo
+      value: "banca"
+    - type: from_intent
+      intent: realizar_transferencia
+      value: "banca"
+    - type: from_intent
+      intent: bloquear_tarjeta
+      value: "banca"
+    - type: from_intent
+      intent: asesor_financiero
+      value: "banca"
+    - type: from_intent
+      intent: agendar_cita
+      value: "salud"
+    - type: from_intent
+      intent: consultar_sintoma
+      value: "salud"
+    - type: from_intent
+      intent: informacion_medicamento
+      value: "salud"
+    - type: from_intent
+      intent: contacto_emergencia
+      value: "salud"
+
+
+responses:
+  utter_greet:
+  - text: "¡Hola! Soy tu asistente virtual. ¿En qué te puedo ayudar hoy?"
+  utter_goodbye:
+  - text: "¡Adiós! Que tengas un excelente día."
+  utter_iamabot:
+  - text: "Soy un bot, creado con RASA y potenciado con IA generativa."
+  utter_ask_help:
+  - text: "Puedo ayudarte con temas de **e-commerce (compras, pedidos)**, **banca (saldos, transferencias)** o **salud (citas, síntomas)**. ¿De qué quieres hablar?"
+  utter_please_rephrase:
+  - text: "No te he entendido bien. ¿Podrías reformular tu pregunta?"
+  utter_ask_product:
+  - text: "Claro, ¿qué producto te interesa?"
+  utter_ask_order_number:
+  - text: "Por supuesto, ¿cuál es tu número de pedido?"
+  utter_ask_recommendation_criteria:
+  - text: "Para recomendarte algo, ¿qué tipo de productos te interesan o qué uso le darías?"
+  utter_confirm_purchase:
+  - text: "¿Estás seguro que deseas finalizar tu compra?"
+  utter_ask_payment_details:
+  - text: "Para el pago, ¿con qué método te gustaría proceder?"
+
+  # --- Respuestas de Banca ---
+  utter_ask_account_type:
+  - text: "¿De qué tipo de cuenta te gustaría consultar el saldo (ahorros, corriente, inversiones)?"
+  utter_ask_transfer_details:
+  - text: "Necesito la cantidad a transferir y la cuenta de destino."
+  utter_ask_card_type:
+  - text: "¿Qué tipo de tarjeta quieres bloquear (crédito, débito)?"
+  utter_connect_financial_advisor:
+  - text: "Te pondré en contacto con un asesor financiero. Por favor, espera un momento."
+
+  # --- Respuestas de Salud ---
+  utter_ask_appointment_details:
+  - text: "¿Qué especialidad buscas y para qué fecha/hora te gustaría agendar tu cita?"
+  utter_ask_symptom_details:
+  - text: "Por favor, descríbeme tus síntomas con más detalle."
+  utter_ask_medication_name:
+  - text: "¿De qué medicamento te gustaría obtener información?"
+  utter_emergency_contact:
+  - text: "Si es una emergencia, por favor llama al 911 (o el número de emergencia local) inmediatamente. No soy un profesional médico."
+  
+  utter_ask_domain_clarification:
+  - text: "¿Sobre qué tema quieres hablar (e-commerce, banca, salud)?"
+
+actions:
+- action_set_domain # Nueva acción para manejar el cambio de dominio
+- action_verificar_stock
+- action_consultar_estado_pedido
+- action_recomendar_producto
+- action_finalizar_compra
+- action_pagar_pedido
+- action_consultar_saldo
+- action_realizar_transferencia
+- action_bloquear_tarjeta
+- action_agendar_cita
+- action_consultar_sintoma
+- action_informacion_medicamento
+- action_contactar_emergencia
+- accion_pregunta_gemini
+- action_provide_help
+================================================================================
+// En la ruta '.' está el archivo con nombre 'endpoints.yml'
+================================================================================
+
+# endpoints.yml
+action_endpoint:
+  # url: "http://localhost:5055/webhook"
+  url: ${ACTION_ENDPOINT_URL} 
+  # RASA reemplazará esto con el valor de la variable de entorno
+================================================================================
+// En la ruta '.' está el archivo con nombre 'extract_code.py'
+================================================================================
+
+import os
+
+DIRECTORIO_DEL_PROYECTO = "."
+
+NOMBRE_ARCHIVO_SALIDA = "codigo_explicado.txt"
+
+# --- COMPLETA AQUÍ ---
+# Solo se incluirán los archivos que terminen con estas extensiones.
+EXTENSIONES_A_INCLUIR = [
+    ".py",
+    ".html",
+    ".css",
+    ".js",
+    ".yml",
+    ".md",
+    ".txt",
+    ".yaml",
+    "Dockerfile"
+]
+
+CARPETAS_A_IGNORAR = [
+    "node_modules",
+    "venv",
+    "__pycache__",
+    ".git",
+    ".vscode",
+]
+
+
+print(f"Iniciando la extracción de archivos tipo {', '.join(EXTENSIONES_A_INCLUIR)}")
+print(f"Directorio analizado: '{DIRECTORIO_DEL_PROYECTO}'")
+
+with open(NOMBRE_ARCHIVO_SALIDA, "w", encoding="utf-8") as archivo_final:
+
+    for ruta_actual, lista_subcarpetas, lista_archivos in os.walk(DIRECTORIO_DEL_PROYECTO):
+
+        lista_subcarpetas[:] = [
+            carpeta for carpeta in lista_subcarpetas
+            if carpeta not in CARPETAS_A_IGNORAR
+        ]
+
+        for nombre_archivo in lista_archivos:
+
+            if not any(nombre_archivo.endswith(ext) for ext in EXTENSIONES_A_INCLUIR):
+                continue
+
+            # --- CAMBIO REALIZADO AQUÍ ---
+            # Ahora el encabezado es mucho más descriptivo.
+            encabezado = f"// En la ruta '{ruta_actual}' está el archivo con nombre '{nombre_archivo}'\n"
+            archivo_final.write("\n" + "="*80 + "\n") # Línea separadora para mayor claridad
+            archivo_final.write(encabezado)
+            archivo_final.write("="*80 + "\n\n")
+
+            ruta_completa_del_archivo = os.path.join(ruta_actual, nombre_archivo)
+
+            try:
+                with open(ruta_completa_del_archivo, "r", encoding="utf-8", errors="ignore") as archivo_a_leer:
+                    contenido = archivo_a_leer.read()
+                    archivo_final.write(contenido)
+                print(f"  -> Incluyendo: {ruta_completa_del_archivo}")
+
+            except Exception as error:
+                archivo_final.write(f"[ERROR: No se pudo leer este archivo. Razón: {error}]\n")
+                print(f"  -> ERROR al leer: {ruta_completa_del_archivo}")
+
+
+print(f"\n¡Proceso terminado! :D")
+print(f"El código con las rutas explicadas se ha guardado en: '{NOMBRE_ARCHIVO_SALIDA}'")
+================================================================================
+// En la ruta '.' está el archivo con nombre 'README.md'
+================================================================================
+
+# chatbot_project_RASA
+creacion de chatbots con rasa
+
+================================================================================
+// En la ruta '.' está el archivo con nombre 'render.yaml'
+================================================================================
+
+# render.yaml
+# Instrucciones para que Render.com despliegue nuestro chatbot
+
+services:
+  # Servicio 1: El Servidor de Acciones (usando el Dockerfile)
+  - type: web
+    name: chatbot-actions
+    env: docker
+    # Ruta a tu Dockerfile dentro del repositorio
+    dockerfilePath: ./actions/Dockerfile
+    # Plan de servicio (Starter es suficiente para las acciones)
+    plan: starter
+
+  # Servicio 2: El Servidor Principal de RASA
+  - type: web
+    name: chatbot-rasa
+    env: python
+    # Plan de servicio (RASA necesita un poco más de memoria)
+    plan: starter
+    # Comandos que Render ejecutará para preparar y lanzar el servicio
+    buildCommand: |
+      pip install -r requirements.txt
+      rasa train
+    startCommand: rasa run --enable-api --cors "*"
+    # Variables de entorno para conectar este servicio con el de acciones
+    envVars:
+      - key: ACTION_ENDPOINT_URL
+        # Render automáticamente crea una URL interna con el nombre del otro servicio
+        value: http://chatbot-actions:5055/webhook
+
+  # Servicio 3: La Aplicación Web (Frontend)
+  - type: web
+    name: chatbot-frontend
+    env: python
+    # Plan de servicio
+    plan: starter
+    # Comandos de preparación y lanzamiento
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    # Variables de entorno para conectar el frontend con el servidor RASA
+    envVars:
+      - key: RASA_API_URL
+        value: http://chatbot-rasa:5005/webhooks/rest/webhook
+================================================================================
+// En la ruta '.' está el archivo con nombre 'requirements.txt'
+================================================================================
+
+# Dependencias para el Servidor RASA y Flask
+rasa==3.6.13
+Flask==2.3.3
+Flask-Cors==4.0.0
+python-dotenv==1.0.0
+requests==2.31.0
+gunicorn==20.1.0  # Servidor WSGI de producción para Flask
+================================================================================
+// En la ruta '.' está el archivo con nombre 'requirementss.txt'
+================================================================================
+
+rasa==3.6.13
+rasa-sdk==3.6.2
+google-generativeai==0.3.2
+Flask==2.3.3
+Flask-Cors==4.0.0
+python-dotenv==1.0.0
+requests==2.31.0
+================================================================================
+// En la ruta '.\actions' está el archivo con nombre 'actions.py'
+================================================================================
+
+import os
+import logging
+from typing import Any, Text, Dict, List
+from dotenv import load_dotenv
+
+from rasa_sdk import Action, Tracker
+from rasa_sdk.executor import CollectingDispatcher
+from rasa_sdk.events import SlotSet, FollowupAction
+
+import google.generativeai as genai
+
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- SERVICIO DE IA GENERATIVA ---
+class GeminiService:
+    def __init__(self):
+        self.api_key = os.getenv('GEMINI_API_KEY')
+        self.model_name = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
+        
+        if not self.api_key:
+            logger.error("GEMINI_API_KEY no encontrada en variables de entorno. Las respuestas de IA generativa no funcionarán.")
+            self.model = None
+            return
+        
+        try:
+            genai.configure(api_key=self.api_key)
+            self.model = genai.GenerativeModel(self.model_name)
+            logger.info(f"Servicio Gemini configurado con el modelo: {self.model_name}")
+        except Exception as e:
+            logger.error(f"Error configurando Gemini: {e}. Las respuestas de IA generativa no funcionarán.")
+            self.model = None
+    
+    def generate_response(self, prompt: str, domain: str = "general") -> str:
+        if not self.model:
+            return "Lo siento, hay un problema con la configuración de la IA en este momento."
+        
+        # Adaptar el prompt según el dominio
+        system_prompt = ""
+        if domain == "ecommerce":
+            system_prompt = "Eres un asistente experto para una tienda online de tecnología. Responde de forma clara y útil sobre productos, stock o pedidos. Siempre mantén un tono comercial pero amigable."
+        elif domain == "banca":
+            system_prompt = "Eres un asistente bancario. Responde con precisión sobre saldos, transferencias, bloqueos de tarjeta o asesoramiento financiero. Prioriza la seguridad y la claridad en la información."
+        elif domain == "salud":
+            system_prompt = "Eres un asistente de salud. Proporciona información general sobre síntomas, citas o medicamentos. NO eres un médico, no hagas diagnósticos ni prescribas tratamientos. Siempre recomienda consultar a un profesional de la salud en caso de emergencia o dudas médicas."
+        else: # general o fallback
+            system_prompt = "Eres un asistente general y útil."
+
+        full_prompt = f"{system_prompt}\n\nPregunta del usuario: \"{prompt}\""
+
+        try:
+            response = self.model.generate_content(full_prompt)
+            return response.text
+        except Exception as e:
+            logger.error(f"Error generando respuesta con Gemini: {e}")
+            return f"Disculpa, tuve un problema al procesar tu consulta con la IA: {str(e)}"
+
+# Instancia global del servicio para reutilizarla
+gemini_service = GeminiService()
+
+# --- ACCIONES GENERALES ---
+
+class ActionSetDomain(Action):
+    def name(self) -> Text:
+        return "action_set_domain"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        # Este slot ya se mapea automáticamente desde el domain.yml si hay una entidad 'dominio'
+        # o un intent que lo active. Esta acción es más para confirmación o lógica adicional.
+        current_domain = tracker.get_slot("current_domain")
+        
+        if current_domain == "ecommerce":
+            dispatcher.utter_message(text="¡Perfecto! Estamos en el dominio de e-commerce. ¿Cómo puedo ayudarte con tus compras o pedidos?")
+        elif current_domain == "banca":
+            dispatcher.utter_message(text="Entendido, pasamos al dominio de banca. ¿Qué operación o consulta bancaria tienes?")
+        elif current_domain == "salud":
+            dispatcher.utter_message(text="Ahora estamos en el dominio de salud. Recuerda que solo puedo dar información general y no soy un sustituto de un profesional médico. ¿En qué te puedo asistir?")
+        else:
+            dispatcher.utter_message(text="No estoy seguro de qué dominio quieres hablar. ¿Podrías ser más específico (e-commerce, banca, salud)?")
+        
+        return []
+
+class ActionProvideHelp(Action):
+    def name(self) -> Text:
+        return "action_provide_help"
+    
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        help_message = """
+        ¡Claro! Puedo ayudarte con varias cosas en estos dominios:
+        
+        **E-commerce (Compras online):**
+        - Consultar productos: "Háblame del iPhone 15"
+        - Verificar stock: "¿Hay stock de la RTX 4080?"
+        - Estado de tu pedido: "Rastrear mi pedido 123-ABC-789"
+        - Recomendaciones: "Recomiéndame una laptop para estudios"
+        
+        **Banca (Servicios financieros):**
+        - Consultar saldo: "¿Cuál es mi saldo de ahorros?"
+        - Realizar transferencias: "Quiero transferir 500 a la cuenta 123456"
+        - Bloquear tarjeta: "Bloquear mi tarjeta de crédito"
+        
+        **Salud (Información y citas):**
+        - Agendar citas: "Agendar cita con un dentista"
+        - Consultar síntomas: "Tengo fiebre y tos"
+        - Información de medicamentos: "Información sobre ibuprofeno"
+        
+        También puedo responder preguntas generales. Solo dime qué necesitas.
+        """
+        dispatcher.utter_message(text=help_message)
+        return []
+
+class ActionAskGemini(Action):
+    def name(self) -> Text:
+        return "accion_pregunta_gemini"
+    
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        user_message = tracker.latest_message.get('text', '')
+        current_domain = tracker.get_slot("current_domain") or "general"
+        
+        # El prompt se adapta dentro del servicio Gemini
+        response = gemini_service.generate_response(user_message, domain=current_domain)
+        dispatcher.utter_message(text=response)
+        return []
+
+# ======================================================================================================
+# --- E-COMMERCE: ACCIONES PARA TIENDA ONLINE ---
+# ======================================================================================================
+
+class ActionVerificarStock(Action):
+    def name(self) -> Text:
+        return "action_verificar_stock"
+    
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        producto = tracker.get_slot("producto")
+        if not producto:
+            dispatcher.utter_message(text="Claro, ¿qué producto te gustaría consultar?")
+            return []
+
+        # --- SIMULACIÓN DE CONSULTA A BASE DE DATOS/API DE INVENTARIO ---
+        # En un entorno real, aquí se haría una llamada a una API de tu sistema de inventario.
+        stock_db = {
+            "iphone 15": 50,
+            "samsung galaxy s24": 35,
+            "rtx 4080": 0,
+            "teclado mecánico keychron": 120,
+            "monitor ultrawide": 15,
+            "auriculares bluetooth": 200
+        }
+        
+        stock_disponible = stock_db.get(producto.lower(), 0)
+        
+        if stock_disponible > 0:
+            message = f"¡Buenas noticias! Tenemos {stock_disponible} unidades de {producto} en stock."
+        else:
+            message = f"Lo siento, actualmente no tenemos stock de {producto}. ¿Te gustaría que te notifique cuando vuelva a estar disponible?"
+        
+        dispatcher.utter_message(text=message)
+        return []
+
+class ActionConsultarEstadoPedido(Action):
+    def name(self) -> Text:
+        return "action_consultar_estado_pedido"
+    
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        num_pedido = tracker.get_slot("numero_pedido")
+        if not num_pedido:
+            dispatcher.utter_message(text="Claro, por favor, indícame tu número de pedido.")
+            return []
+
+        # --- SIMULACIÓN DE CONSULTA A API DE LOGÍSTICA/CRM ---
+        # Aquí se integraría con un sistema de gestión de pedidos real.
+        pedidos_db = {
+            "123-abc-789": "Enviado. Se espera que llegue en 2 días hábiles.",
+            "xyz-987-654": "Procesando. Tu pedido está siendo preparado en nuestro almacén.",
+            "ord-001": "Retrasado. Lamentamos el inconveniente, la nueva fecha estimada es el 15 de Octubre.",
+            "ord-456-111": "Entregado. ¡Esperamos que lo disfrutes!"
+        }
+        
+        estado = pedidos_db.get(num_pedido.lower(), "No pudimos encontrar un pedido con ese número. Por favor, verifica que sea correcto.")
+        
+        dispatcher.utter_message(text=f"El estado de tu pedido {num_pedido} es: {estado}")
+        return []
+
+class ActionRecomendarProducto(Action):
+    def name(self) -> Text:
+        return "action_recomendar_producto"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        categoria = tracker.get_slot("categoria")
+        interes = tracker.get_slot("interes")
+
+        # --- Lógica de Recomendación (simple o basada en LLM) ---
+        # Esto podría ser una búsqueda en una base de datos de productos
+        # o un prompt a Gemini para generar una recomendación inteligente.
+        
+        if not categoria and not interes:
+            dispatcher.utter_message(text="Para recomendarte un producto, ¿qué tipo de producto te interesa y para qué uso lo necesitas?")
+            return []
+        
+        prompt_recommendation = f"El usuario busca una recomendación de {categoria or 'producto'} para {interes or 'uso general'}. Como experto en ventas, sugiere 2-3 productos populares de tu tienda y explica brevemente por qué son buenas opciones."
+        
+        recommendation = gemini_service.generate_response(prompt_recommendation, domain="ecommerce")
+        dispatcher.utter_message(text=f"Aquí tienes algunas recomendaciones:\n{recommendation}")
+
+        return [SlotSet("categoria", None), SlotSet("interes", None)] # Limpiar slots para futuras recomendaciones
+
+class ActionFinalizarCompra(Action):
+    def name(self) -> Text:
+        return "action_finalizar_compra"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        # --- SIMULACIÓN: RECUPERAR CARRITO DE COMPRAS ---
+        # En una aplicación real, aquí se integraría con el sistema de carrito de compras del usuario.
+        cart_items = ["iPhone 15", "Auriculares Bluetooth"] # Ejemplo
+        total_price = 1299.99 # Ejemplo
+
+        if not cart_items:
+            dispatcher.utter_message(text="Tu carrito de compras está vacío. ¿Te gustaría explorar nuestros productos?")
+            return []
+
+        cart_summary = ", ".join(cart_items)
+        dispatcher.utter_message(text=f"Tu carrito contiene: {cart_summary}. El total es ${total_price:.2f}. ¿Deseas confirmar la compra?")
+        # RASA esperará un 'affirm' o 'deny' después de esto, por la story.yml
+        return [SlotSet("total_price", total_price)] # Guardar para la acción de pago
+
+class ActionPagarPedido(Action):
+    def name(self) -> Text:
+        return "action_pagar_pedido"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        total_price = tracker.get_slot("total_price")
+
+        if not total_price:
+            dispatcher.utter_message(text="Parece que no hay un pedido activo para pagar. ¿Te gustaría iniciar una compra?")
+            return []
+        
+        # --- SIMULACIÓN DE PROCESO DE PAGO ---
+        # Aquí se integraría con una pasarela de pago (Stripe, PayPal, etc.).
+        # Se pedirían detalles de pago o se redirigiría al usuario.
+        dispatcher.utter_message(text=f"Procediendo al pago de ${total_price:.2f}. Te enviaremos un enlace seguro para completar la transacción. ¡Gracias por tu compra!")
+        
+        return [SlotSet("total_price", None)] # Limpiar slot después de pagar
+
+# ======================================================================================================
+# --- BANCA: ACCIONES PARA SERVICIOS FINANCIEROS ---
+# ======================================================================================================
+
+class ActionConsultarSaldo(Action):
+    def name(self) -> Text:
+        return "action_consultar_saldo"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        tipo_cuenta = tracker.get_slot("tipo_cuenta")
+        
+        # --- SIMULACIÓN DE CONSULTA A SISTEMA BANCARIO ---
+        # Aquí se integrarían con APIs bancarias (OAuth2, PSD2, etc.).
+        # Requiere autenticación del usuario.
+        
+        if not tipo_cuenta:
+            dispatcher.utter_message(text="¿De qué tipo de cuenta te gustaría consultar el saldo (ej: ahorros, corriente, inversiones)?")
+            return []
+        
+        # Simulación de saldos
+        saldos_db = {
+            "ahorros": 1500.75,
+            "corriente": 800.50,
+            "inversiones": 5000.00
+        }
+        
+        saldo = saldos_db.get(tipo_cuenta.lower(), None)
+
+        if saldo is not None:
+            dispatcher.utter_message(text=f"Tu saldo en la cuenta de {tipo_cuenta} es: ${saldo:.2f}")
+        else:
+            dispatcher.utter_message(text=f"No pude encontrar información para el tipo de cuenta '{tipo_cuenta}'. Por favor, verifica el tipo de cuenta.")
+        
+        return [SlotSet("tipo_cuenta", None)]
+
+class ActionRealizarTransferencia(Action):
+    def name(self) -> Text:
+        return "action_realizar_transferencia"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        cantidad = tracker.get_slot("cantidad")
+        cuenta_destino = tracker.get_slot("cuenta_destino")
+
+        if not cantidad or not cuenta_destino:
+            dispatcher.utter_message(text="Para realizar una transferencia, necesito la cantidad y la cuenta de destino.")
+            return []
+
+        # --- SIMULACIÓN DE PROCESO DE TRANSFERENCIA BANCARIA ---
+        # Esto requeriría autenticación fuerte (2FA) y validación de la cuenta de destino.
+        if cantidad > 0:
+            dispatcher.utter_message(text=f"Confirmando transferencia de ${cantidad:.2f} a la cuenta {cuenta_destino}. Se te enviará un código de verificación.")
+            # En un entorno real, se activaría un proceso de verificación y confirmación.
+        else:
+            dispatcher.utter_message(text="La cantidad a transferir debe ser positiva.")
+        
+        return [SlotSet("cantidad", None), SlotSet("cuenta_destino", None)]
+
+class ActionBloquearTarjeta(Action):
+    def name(self) -> Text:
+        return "action_bloquear_tarjeta"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        tipo_tarjeta = tracker.get_slot("tipo_tarjeta")
+
+        if not tipo_tarjeta:
+            dispatcher.utter_message(text="¿Qué tipo de tarjeta deseas bloquear (crédito o débito)?")
+            return []
+        
+        # --- SIMULACIÓN DE BLOQUEO DE TARJETA ---
+        # Integración con el sistema de tarjetas del banco.
+        dispatcher.utter_message(text=f"Hemos iniciado el proceso para bloquear tu tarjeta de {tipo_tarjeta}. Recibirás una confirmación por SMS en breve. Para reponerla, por favor visita la sucursal más cercana o llama a atención al cliente.")
+        return [SlotSet("tipo_tarjeta", None)]
+
+class ActionContactarAsesorFinanciero(Action):
+    def name(self) -> Text:
+        return "action_contactar_asesor_financiero"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        dispatcher.utter_message(text="Te pondré en contacto con un asesor financiero. Por favor, espera un momento y serás redirigido a una llamada o chat con uno de nuestros especialistas.")
+        # En un entorno real, aquí se integraría con un CRM o sistema de contact center.
+        return []
+
+# ======================================================================================================
+# --- SALUD: ACCIONES PARA ATENCIÓN MÉDICA ---
+# ======================================================================================================
+
+class ActionAgendarCita(Action):
+    def name(self) -> Text:
+        return "action_agendar_cita"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        especialidad = tracker.get_slot("especialidad")
+        fecha_hora = tracker.get_slot("fecha_hora")
+
+        if not especialidad or not fecha_hora:
+            dispatcher.utter_message(text="Para agendar tu cita, necesito la especialidad médica y la fecha/hora que te gustaría.")
+            return []
+        
+        # --- SIMULACIÓN DE AGENDA DE CITAS ---
+        # Aquí se integraría con un sistema de gestión de clínicas o agenda médica.
+        dispatcher.utter_message(text=f"Tu cita con {especialidad} para el {fecha_hora} ha sido agendada con éxito. Recibirás una confirmación por correo electrónico.")
+        return [SlotSet("especialidad", None), SlotSet("fecha_hora", None)]
+
+class ActionConsultarSintoma(Action):
+    def name(self) -> Text:
+        return "action_consultar_sintoma"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        sintoma = tracker.get_slot("sintoma")
+
+        if not sintoma:
+            dispatcher.utter_message(text="Por favor, descríbeme tus síntomas con más detalle para poder buscar información.")
+            return []
+        
+        # --- USO DE GEMINI PARA EXPLICAR SÍNTOMAS ---
+        # Es crucial que el prompt indique a Gemini que NO DEBE HACER DIAGNÓSTICOS.
+        prompt = f"""
+        Eres un asistente de salud que proporciona información general sobre síntomas. NO ERES UN MÉDICO, NO DIAGNOSTICAS NI PRESCRIBES.
+        Explica brevemente y de forma informativa sobre el siguiente síntoma: {sintoma}.
+        Siempre termina tu respuesta recomendando consultar a un profesional de la salud si los síntomas persisten o empeoran.
+        """
+        info_sintoma = gemini_service.generate_response(prompt, domain="salud")
+        dispatcher.utter_message(text=info_sintoma)
+        return [SlotSet("sintoma", None)]
+
+class ActionInformacionMedicamento(Action):
+    def name(self) -> Text:
+        return "action_informacion_medicamento"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        
+        # --- LOG DE DEPURACIÓN AÑADIDO ---
+        logger.info(f"--- Ejecutando ActionInformacionMedicamento ---")
+
+        medicamento = tracker.get_slot("medicamento")
+        
+        # --- LOG DE DEPURACIÓN AÑADIDO ---
+        logger.info(f"Medicamento extraído del slot: {medicamento}")
+
+        if not medicamento:
+            logger.warning("No se encontró medicamento en el slot. Enviando pregunta de vuelta.")
+            dispatcher.utter_message(text="¿De qué medicamento te gustaría obtener información?")
+            return []
+        
+        prompt = f"""
+        Eres un asistente de salud que proporciona información general sobre medicamentos. NO ERES UN MÉDICO, NO DIAGNOSTICAS NI PRESCRIBES.
+        Explica brevemente para qué sirve y cuáles son los usos comunes del medicamento: {medicamento}.
+        Aclara que siempre se debe consultar a un médico o farmacéutico antes de tomar cualquier medicamento.
+        """
+        
+        # --- LOG DE DEPURACIÓN AÑADIDO ---
+        logger.info(f"Enviando prompt a Gemini para el medicamento: {medicamento}")
+        info_medicamento = gemini_service.generate_response(prompt, domain="salud")
+        
+        # --- LOG DE DEPURACIÓN AÑADIDO ---
+        logger.info(f"Respuesta de Gemini recibida: {info_medicamento[:100]}...") # Mostramos los primeros 100 caracteres
+        
+        dispatcher.utter_message(text=info_medicamento)
+        return [SlotSet("medicamento", None)]
+
+class ActionContactarEmergencia(Action):
+    def name(self) -> Text:
+        return "action_contactar_emergencia"
+
+    def run(self, dispatcher: CollectingDispatcher, tracker: Tracker, domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        dispatcher.utter_message(text="Si es una emergencia médica, por favor llama al número de emergencia local (ej. 911, 112) inmediatamente. Este asistente no puede gestionar emergencias directamente.")
+        dispatcher.utter_message(text="Te recomiendo buscar ayuda profesional urgente.")
+        return []
+
+# ======================================================================================================
+# --- FIN DE ACCIONES ---
+# ======================================================================================================
+================================================================================
+// En la ruta '.\actions' está el archivo con nombre 'Dockerfile'
+================================================================================
+
+# Usa la imagen oficial de Rasa SDK, que ya tiene lo básico.
+FROM rasa/rasa-sdk:3.6.2
+
+# Establece el directorio de trabajo
+WORKDIR /app
+
+# --- MANEJO DE PERMISOS ---
+USER root
+RUN chown -R 1001:0 /opt/venv
+USER 1001
+# --- FIN DEL MANEJO DE PERMISOS ---
+
+# Copia y instala los requerimientos
+COPY ./requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copia el resto del código
+COPY . .
+
+# --- COMANDO DE INICIO EXPLÍCITO Y ROBUSTO ---
+# En lugar de usar 'rasa run actions', llamamos directamente al módulo de Python
+# que inicia el servidor. Esto evita problemas con los scripts de entrada del contenedor.
+CMD python -m rasa_sdk --actions actions -p $PORT
+================================================================================
+// En la ruta '.\actions' está el archivo con nombre 'requirements.txt'
+================================================================================
+
+# Dependencias necesarias para actions.py
+google-generativeai==0.3.2
+python-dotenv==1.0.0
+================================================================================
+// En la ruta '.\data' está el archivo con nombre 'nlu.yml'
+================================================================================
+
+# data/nlu.yml
+version: "3.1"
+
+nlu:
+- intent: greet
+  examples: |
+    - hola
+    - buenas
+    - hey
+    - buenos días
+
+- intent: goodbye
+  examples: |
+    - adiós
+    - hasta luego
+    - bye
+    - nos vemos
+
+- intent: affirm
+  examples: |
+    - sí
+    - claro
+    - por supuesto
+    - exacto
+    - correcto
+
+- intent: deny
+  examples: |
+    - no
+    - para nada
+    - no lo creo
+    - incorrecto
+
+- intent: ask_help
+  examples: |
+    - ¿qué puedes hacer?
+    - ayuda
+    - ¿en qué me puedes ayudar?
+    - ¿cómo funciona esto?
+
+- intent: switch_domain
+  examples: |
+    - quiero hablar de [banca](dominio)
+    - cambiemos a [salud](dominio)
+    - necesito ayuda con [e-commerce](dominio)
+    - mi consulta es de [banca](dominio)
+    - pasemos al tema de [salud](dominio)
+    - hablemos de [compras](dominio:ecommerce)
+
+# === E-commerce ===
+- intent: consultar_producto
+  examples: |
+    - háblame del [iPhone 15](producto)
+    - quiero información sobre la [laptop gamer Alienware](producto)
+    - ¿qué características tiene el [Samsung Galaxy S24](producto)?
+    - detalles del [teclado mecánico Keychron](producto)
+    - especificaciones del [monitor ultrawide](producto)
+
+- intent: verificar_stock
+  examples: |
+    - ¿tienen stock del [iPhone 15](producto)?
+    - ¿hay [monitores 4K](producto) disponibles?
+    - ¿está disponible la [tarjeta gráfica RTX 4080](producto)?
+    - stock de [auriculares bluetooth](producto)
+
+- intent: estado_pedido
+  examples: |
+    - ¿dónde está mi pedido?
+    - quiero saber el estado de mi orden
+    - rastrear mi pedido [123-ABC-789](numero_pedido)
+    - ¿cómo va el envío [XYZ-987-654](numero_pedido)?
+    - mi orden [ORD-001](numero_pedido)
+
+- intent: recomendar_producto
+  examples: |
+    - recomiéndame una [laptop](categoria) para [estudios](interes)
+    - qué [teléfono](categoria) me recomiendas para [fotografía](interes)
+    - busco una [consola](categoria) para [juegos multijugador](interes)
+    - dame opciones de [cámaras](categoria)
+    - qué [audífonos](categoria) son buenos para [hacer ejercicio](interes)
+
+- intent: finalizar_compra
+  examples: |
+    - quiero finalizar mi compra
+    - proceder al pago
+    - comprar ahora
+    - checkout
+
+- intent: pagar_pedido
+  examples: |
+    - quiero pagar mi pedido
+    - cómo puedo pagar
+    - opciones de pago
+
+# === Fin E-commerce ===
+
+# === Banca ===
+- intent: consultar_saldo
+  examples: |
+    - cuál es mi saldo
+    - cuánto dinero tengo
+    - saldo de mi cuenta de [ahorros](tipo_cuenta)
+    - ver saldo de [inversiones](tipo_cuenta)
+
+- intent: realizar_transferencia
+  examples: |
+    - quiero hacer una transferencia
+    - transferir [1000](cantidad) a la cuenta [1234567890](cuenta_destino)
+    - enviar [500](cantidad) pesos a [Maria Perez](cuenta_destino)
+
+- intent: bloquear_tarjeta
+  examples: |
+    - quiero bloquear mi tarjeta
+    - bloquear mi tarjeta de [crédito](tipo_tarjeta)
+    - perdí mi tarjeta de [débito](tipo_tarjeta)
+
+- intent: asesor_financiero
+  examples: |
+    - necesito hablar con un asesor
+    - quiero contactar a un experto financiero
+    - ayúdame con mis finanzas
+
+# === Fin Banca ===
+
+# === Salud ===
+- intent: agendar_cita
+  examples: |
+    - quiero agendar una cita
+    - reservar con un [dentista](especialidad)
+    - cita para el [viernes a las 10am](fecha_hora)
+    - necesito ver a un [cardiólogo](especialidad) el [próximo martes](fecha_hora)
+
+- intent: consultar_sintoma
+  examples: |
+    - me duele la [cabeza](sintoma)
+    - tengo [fiebre](sintoma) y [tos](sintoma)
+    - qué significa tener [mareos](sintoma)
+    - me siento [mal](sintoma)
+
+- intent: informacion_medicamento
+  examples: |
+    - información sobre [ibuprofeno](medicamento)
+    - para qué sirve el [paracetamol](medicamento)
+    - efectos secundarios de [amoxicilina](medicamento)
+
+- intent: contacto_emergencia
+  examples: |
+    - es una emergencia
+    - necesito ayuda urgente
+    - qué hago en una emergencia
+    - llamar a emergencias
+
+# === Fin Salud ===
+
+- intent: pregunta_abierta
+  examples: |
+    - explícame qué es la fotosíntesis
+    - cuál es la capital de Francia
+    - dame una historia corta
+    - cómo funciona un agujero negro
+    - qué es la IA
+================================================================================
+// En la ruta '.\data' está el archivo con nombre 'stories.yml'
+================================================================================
+
+# data/stories.yml
+version: "3.1"
+
+stories:
+- story: Saludo y despedida
+  steps:
+  - intent: greet
+  - action: utter_greet
+  - intent: goodbye
+  - action: utter_goodbye
+
+- story: Pedir ayuda general
+  steps:
+  - intent: ask_help
+  - action: action_provide_help
+
+# --- HISTORIAS DE CAMBIO DE DOMINIO CORREGIDAS ---
+- story: Cambiar de dominio a e-commerce
+  steps:
+  - intent: switch_domain
+    entities:
+    - dominio: "ecommerce"
+  - slot_was_set:
+    - current_domain: "ecommerce"
+  - action: action_set_domain
+  - action: action_listen
+
+- story: Cambiar de dominio a banca
+  steps:
+  - intent: switch_domain
+    entities:
+    - dominio: "banca"
+  - slot_was_set:
+    - current_domain: "banca"
+  - action: action_set_domain
+  - action: action_listen
+
+- story: Cambiar de dominio a salud
+  steps:
+  - intent: switch_domain
+    entities:
+    - dominio: "salud"
+  - slot_was_set:
+    - current_domain: "salud"
+  - action: action_set_domain
+  - action: action_listen
+
+# === E-commerce Stories ===
+- story: Consultar stock de producto
+  steps:
+  - intent: verificar_stock
+  - action: action_verificar_stock
+
+- story: Consultar estado de pedido
+  steps:
+  - intent: estado_pedido
+  - action: action_consultar_estado_pedido
+
+- story: Recomendar producto
+  steps:
+  - intent: recomendar_producto
+  - action: action_recomendar_producto
+
+- story: Finalizar compra
+  steps:
+  - intent: finalizar_compra
+  - action: action_finalizar_compra
+  - intent: affirm
+  - action: action_pagar_pedido
+
+# === Fin E-commerce Stories ===
+
+# === Banca Stories ===
+- story: Consultar saldo
+  steps:
+  - intent: consultar_saldo
+  - action: action_consultar_saldo
+
+- story: Realizar transferencia
+  steps:
+  - intent: realizar_transferencia
+  - action: action_realizar_transferencia
+
+- story: Bloquear tarjeta
+  steps:
+  - intent: bloquear_tarjeta
+  - action: action_bloquear_tarjeta
+
+# ¡OJO! Esta acción no la habíamos definido en el domain.yml.
+- story: Contactar asesor financiero
+  steps:
+  - intent: asesor_financiero
+  - action: utter_connect_financial_advisor
+
+# === Fin Banca Stories ===
+
+# === Salud Stories ===
+- story: Agendar cita
+  steps:
+  - intent: agendar_cita
+  - action: action_agendar_cita
+
+- story: Consultar síntoma
+  steps:
+  - intent: consultar_sintoma
+  - action: action_consultar_sintoma
+
+- story: Información medicamento
+  steps:
+  - intent: informacion_medicamento
+  - action: action_informacion_medicamento
+
+- story: Contacto emergencia
+  steps:
+  - intent: contacto_emergencia
+  - action: action_contactar_emergencia
+
+# === Fin Salud Stories ===
+
+- story: Pregunta abierta general
+  steps:
+  - intent: pregunta_abierta
+  - action: accion_pregunta_gemini
+
+# --- HISTORIA DE FALLBACK ---
+# Esto es opcional pero bueno tenerlo. Una historia que maneje el fallback.
+- story: NLU Fallback
+  steps:
+  - intent: nlu_fallback
+  - action: action_default_fallback
+================================================================================
+// En la ruta '.\src' está el archivo con nombre 'chatbot.py'
+================================================================================
+
+import pickle
+import random 
+import os 
+import numpy as np
+
+class Chatbot:
+    def __init__(self, model_dir='models/'):
+        self.model_dir = model_dir
+        self.model = None
+        self.temperature = 0.7
+
+        self.load_model()
+
+    def load_model(self):
+        try:
+            model_path = os.path.join(self.model_dir, 'chatbot_model.pkl')
+            with open(model_path, 'rb') as f:
+                self.model = pickle.load(f)
+            
+            # carga vectorizador
+            vectorizer_path = os.path.join(self.model_dir, 'vectorizer.pkl')
+            with open(vectorizer_path, 'rb') as f:
+                self.vectorizer = pickle.load(f)
+            
+            # cargar metadata
+            metadata_path = os.path.join(self.model_dir, 'metadata.pkl')
+            with open(metadata_path, 'rb') as f:
+                metadata = pickle.load(f)
+                self.intent_labels = metadata['intent_labels']
+                self.intents = metadata['intents']
+            
+            print("Modelo cargado exitosamente")
+            return True
+        except FileNotFoundError:
+            print("No se encontro modelo entrenado. Ejecuta el entrenamiento primero.")
+        except Exception as e:
+            print(f"Error encontrado: {e}")
+            return False
+    
+    def predict_intent(self, message):
+        """Predice la intencion del mensaje"""
+        if not self.model or not self.vectorizer:
+            return None, 0.0
+        
+        #Vectorizar el mensaje
+        message_vector = self.vectorizer.transform([message])
+
+        # Prediccion con probabilidades
+        probabilities = self.model.predict_proba(message_vector)[0]
+        predicted_class = np.argmax(probabilities)
+        confidence = probabilities[predicted_class]
+
+        intent = self.intent_labels[predicted_class]
+
+        return intent, confidence
+    
+    def get_fallback_response(self):
+        """Respuesta cuando no se puede clasificar la intencion"""
+        fallback_responses = [
+            "No estoy seguro de como responder a eso. Puedes formalizar tu pregunta?",
+            "Disculpa, no entendi tu pregunta. Puedes ser mas especifico?",
+            "Hmm, no tengo una respuesta clara para eso. Hay algo mas en lo que pueda ayudarte?"
+        ]
+        return random.choice(fallback_responses)
+    
+    def chat(self):
+        """Interfaz de chat por consola"""
+        print("Hola! soy tu chatbot. Escribe 'quit' para salir.\n")
+
+        while True:
+            user_input = input("Tu: ").strip()
+
+            if user_input.lower() in ['quit', 'salir','exit']:
+                print("Bot: !Hasta luego")
+                break
+
+            response = self.get_response(user_input)
+            print(f"Bot: {response}\n")
+    
+    def set_confidence_threshold(self, threshold):
+        """Ajusta el umbral de confianza"""
+        self.confidence_threshold = max(0.0, min(1.0, threshold))
+    
+    def get_model_info(self):
+        """Retorno de informacion sobre el modelo cargado"""
+        if not self.model:
+            return "No hay modelo cargado"
+        
+        info = {
+            'intents_disponibles': self.intent_labels,
+            'numero_intents': len(self.intent_labels),
+            'umbral_confianza': self.confidence_threshold
+        }
+        return info
+    
+#Script
+
+if __name__ == "__main__":
+    bot = Chatbot()
+    if bot.model:
+        bot.chat()
+    else:
+        print("Primero ejecutar modelo de training")
+
+
+            
+            
+================================================================================
+// En la ruta '.\src' está el archivo con nombre 'preprocessing.py'
+================================================================================
+
+import re
+import nltk
+from nltk.stem import SnowballStemmer
+from nltk.corpus import stopwords
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+#Descarga recursos necesarios de NLTK
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
+
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+
+class TextPreprocessor:
+    def __init__(self):
+        self.stemmer = SnowballStemmer('spanish')
+        self.stop_words = set(stopwords.words('spanish'))
+
+    def clean_text(self, text):
+        """Limpia y normaliza el texto"""
+        #Convertir a minusculas
+        text = text.lower()
+
+        #Remover acentos
+        text = self.remove_accents(text)
+
+        #Remover caracteres especiales pero mantener espacios
+        text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+
+        #Remover espacios extra
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        return text
+    
+    def remove_accents(self, text):
+        """Remueve acentos del texto"""
+        return ''.join(c for c in unicodedata.normalize('NFD', text)
+                       if unicodedata.category(c) != 'Mn')
+    
+    #Separa cada palabra de la oracion
+    def tokenize(self, text):
+        """Tokeniza el texto"""
+        tokens = nltk.word_tokenize(text)
+        # Filtrar stopwords y aplicar stemming
+        stemmed_tokens = [
+            self.stemmer.stem(token)
+            for token in tokens
+            if token not in self.stop_words and len(token) > 2
+        ]
+        return ' '.join(stemmed_tokens)
+    
+    def preprocess(self, text):
+        """Proceso completo de preprocesamiento"""
+        cleaned = self.clean_text(text)
+        processed = self.tokenize(cleaned)
+        return processed
+
+class IntentVectorizer:
+    def __init__(self):
+        self.vectorizer = TfidfVectorizer(
+            max_features=1000,
+            ngram_range=(1, 2),
+            stop_words=None #Ya se manejo stopwors en este mismo archivo
+        )
+        self.preprocessor = TextPreprocessor()
+
+    def fit_transform(self, texts):
+        """Ajusta el vectorizador y transforma los textos"""
+        processed_texts = [self.preprocessor.preprocess(text) for text in texts]
+        return self.vectorizer.fit_transform(processed_texts)
+    
+    def transform(self, texts):
+        """Transforma los textos usando el vectorizador"""
+        if isinstance(texts, str):
+            texts = [texts]
+        processed_texts = [self.preprocessor.preprocess(text) for text in texts]
+        return self.vectorizer.transform(processed_texts)
+
+
+
+================================================================================
+// En la ruta '.\src' está el archivo con nombre 'training.py'
+================================================================================
+
+import json 
+import pickle
+import os 
+from sklearn.svm import SVC
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
+
+import numpy as np
+from .preprocessing import IntentVectorizer
+
+class ChatbotTrainer:
+    def __init__(self):
+        self.vectorizer = IntentVectorizer()
+        self.model = SVC(kernel='linear', probability=True, random_state=42)
+        self.intents = None
+        self.intent_labels = []
+    
+    def load_intents(self, filepath):
+        """Carga los intents desde un archivo JSON"""
+        with open(filepath, 'r', encoding='utf-8') as file:
+            data = json.load(file)
+            self.intents = data['intents']
+        return self.intents 
+    
+    def prepare_training_data(self):
+        """Preparar los datos para entrenamiento"""
+        patterns = []
+        labels = []
+
+        for intent in self.intents:
+            for pattern in intent['patterns']:
+                patterns.append(pattern)
+                labels.append(intent['tag'])
+        
+        #Crear mapeo de labels/etiquetas unicos
+        self.intent_labels = list(set(labels))
+        label_to_index = {label:idx for idx,label in enumerate(self.intent_labels)}
+
+        y = [label_to_index[label] for label in labels]
+
+        return patterns, y
+    
+    def train(self, intents_filepath):
+        """Entrena el modelo completo"""
+        print("Cargando intents ")
+        self.load_intents(intents_filepath)
+
+        print("Preparando datos de entrenamiento")
+        x_text, y = self.prepare_training_data()
+
+        print("Vectorizando texto")
+        x = self.vectorizer.fit_transform(x_text)
+
+        print("Dividiendo datos para entrenamiento y prueba")
+        X_train, X_test, y_train, y_test = train_test_split(x,y,test_size=0.2, random_state=42, stratify=y)
+
+        print("Entrenando modelo")
+        self.model.fit(X_train, y_train)
+
+        #Evaluacion
+        print("\nEvaluando modelo")
+        y_pred = self.model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        print(f"Precision: {accuracy:.4f}")
+
+        print("\nReporte de clasificacion:")
+        target_names = [self.intent_labels[i] for i in sorted(set(y_test))]
+        print(classification_report(y_test, y_pred, target_names=target_names))
+
+        return accuracy
+    
+    def save_model(self, model_dir):
+        """Guarda el modelo y componentes necesarios"""
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+        
+        #Guardamos modelo
+        model_path = os.path.join(model_dir, 'chatbot_model.pkl')
+        with open(model_path, 'wb') as f:
+            pickle.dump(self.model, f)
+        
+        #Guardamos vectorizador
+        vectorizer_path = os.path.join(model_dir, 'vectorizer.pkl')
+        with open(vectorizer_path, 'wb') as f:
+            pickle.dump(self.vectorizer, f)
+        
+        #Guardamos labels e intents
+        metadata = {
+            'intent_labels': self.intent_labels,
+            'intents': self.intents
+        }
+        metadata_path = os.path.join(model_dir, 'metadata.pkl')
+        with open(metadata_path, 'wb') as f:
+            pickle.dump(metadata, f)
+
+        print(f"Modelo guardado en {model_dir}")
+
+#Codigo principal para entrenamiento del modelo.
+
+if __name__ == "__main__":
+    trainer = ChatbotTrainer()
+
+    #entrenamiento del modelo
+    trainer.train('../data/intents.json')
+
+    #Guardar el modelo
+    trainer.save_model('../models/')
+
+
+
+        
+
+================================================================================
+// En la ruta '.\templates' está el archivo con nombre 'index.html'
+================================================================================
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asistente Multi-Dominio</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f4f4f4; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        #chat-container { width: 400px; height: 600px; background: white; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); display: flex; flex-direction: column; }
+        #chat-header { background: #007bff; color: white; padding: 15px; border-top-left-radius: 10px; border-top-right-radius: 10px; text-align: center; font-size: 1.2em; }
+        #chat-box { flex-grow: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        .message { padding: 10px 15px; border-radius: 18px; max-width: 80%; line-height: 1.4; }
+        .user-message { background: #007bff; color: white; align-self: flex-end; }
+        .bot-message { background: #e9e9eb; color: #333; align-self: flex-start; }
+        
+        /* --- ESTILOS PARA EL INTERRUPTOR --- */
+        #nlu-toggle-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px;
+            background-color: #f0f0f0;
+            font-size: 0.8em;
+            color: #555;
+            border-bottom: 1px solid #ddd;
+        }
+        #nlu-toggle-container label { margin: 0 10px; }
+        #nlu-toggle { margin-left: 5px; cursor: pointer; }
+
+        #input-container { display: flex; padding: 15px; border-top: 1px solid #ddd; }
+        #user-input { flex-grow: 1; border: 1px solid #ccc; border-radius: 20px; padding: 10px 15px; outline: none; }
+        #send-btn { background: #007bff; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; margin-left: 10px; cursor: pointer; font-size: 1.2em; }
+    </style>
+</head>
+<body>
+    <div id="chat-container">
+        <div id="chat-header">Asistente Multi-Dominio</div>
+        <div id="nlu-toggle-container">
+            <label for="nlu-toggle">Modo Rápido (RASA)</label>
+            <input type="checkbox" id="nlu-toggle">
+            <label for="nlu-toggle">Modo Inteligente (Gemini)</label>
+        </div>
+        <div id="chat-box">
+             <div class="bot-message">¡Hola! Soy tu asistente virtual. Elige un modo de comprensión arriba y dime cómo puedo ayudarte.</div>
+        </div>
+        <div id="input-container">
+            <input type="text" id="user-input" placeholder="Escribe tu mensaje...">
+            <button id="send-btn">→</button>
+        </div>
+    </div>
+
+    <script>
+        const chatBox = document.getElementById('chat-box');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        const nluToggle = document.getElementById('nlu-toggle');
+
+        function addMessage(text, sender) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', `${sender}-message`);
+            // Para renderizar saltos de línea correctamente
+            messageDiv.innerHTML = text.replace(/\n/g, '<br>');
+            chatBox.appendChild(messageDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const message = userInput.value.trim();
+            if (!message) return;
+
+            addMessage(message, 'user');
+            userInput.value = '';
+
+            // Determinar el modo NLU según el interruptor
+            const nluMode = nluToggle.checked ? 'gemini' : 'rasa';
+
+            try {
+                const response = await fetch('http://localhost:5000/webhook', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: message,
+                        sender: 'user123',
+                        metadata: { nlu_mode: nluMode } 
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const botResponses = await response.json();
+                botResponses.forEach(res => {
+                    if (res.text) {
+                        addMessage(res.text, 'bot');
+                    }
+                });
+
+            } catch (error) {
+                console.error('Error sending message:', error);
+                addMessage('Lo siento, hubo un error de conexión. Inténtalo de nuevo.', 'bot');
+            }
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURACIÓN ---
-RASA_API_URL = os.getenv("RASA_API_URL", "http://localhost:5005/webhooks/rest/webhook")
+RASA_API_URL = os.getenv("RASA_API_URL", "https://chatbot-rasa.onrender.com/webhooks/rest/webhook")
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
@@ -178,4 +178,5 @@ def webhook():
     return jsonify(rasa_messages)
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
