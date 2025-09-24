@@ -1,5 +1,5 @@
 action_endpoint:
-  url: "https://chatbot-actions.onrender.com/webhook"
+  url: "https://chatbot-project-rasa.onrender.com/webhook"
 
 tracker_store:
   type: InMemoryTrackerStore
