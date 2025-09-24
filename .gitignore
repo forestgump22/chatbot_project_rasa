@@ -7,11 +7,10 @@ __pycache__/
 *.pyc
 
 # Modelos entrenados de RASA
-# Entrenaremos los modelos en la nube durante el despliegue
-models/*.tar.gz
+# models/*.tar.gz
 
 # Archivos de entorno local
-*.env
+*.env 
 ./.env
 .rasa
 *.md
