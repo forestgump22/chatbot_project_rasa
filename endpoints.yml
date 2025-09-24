@@ -3,7 +3,3 @@ action_endpoint:
 
 tracker_store:
   type: InMemoryTrackerStore
-
-# Añadir esto para el plan gratuito
-lock_store:
-  type: InMemoryLockStore
