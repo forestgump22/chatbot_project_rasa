@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia el resto del código
 COPY . .
 
-# --- CAMBIO FINAL AQUÍ ---
-# El comando para iniciar el servidor de acciones, usando un shell para expandir $PORT
-CMD sh -c 'rasa run actions --actions actions -p $PORT --cors "*"'
+# --- COMANDO DE INICIO EXPLÍCITO Y ROBUSTO ---
+# En lugar de usar 'rasa run actions', llamamos directamente al módulo de Python
+# que inicia el servidor. Esto evita problemas con los scripts de entrada del contenedor.
+CMD python -m rasa_sdk --actions actions -p $PORT
