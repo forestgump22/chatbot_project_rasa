@@ -14,4 +14,4 @@ COPY . .
 
 EXPOSE 5005
 
-CMD ["rasa", "run", "--enable-api", "--cors", "*", "--port", "5005", "--response-timeout", "60"]
+CMD ["sh", "-c", "rasa run --enable-api --cors \"*\" --port $PORT --response-timeout 60"]
