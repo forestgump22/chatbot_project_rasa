@@ -12,5 +12,4 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-# ⚡ CRÍTICO: Usar el puerto de Render, no uno fijo
-CMD ["sh", "-c", "rasa run --enable-api --cors \"*\" --port $PORT --host 0.0.0.0"]
+CMD ["sh", "-c", "rasa run --enable-api --cors \"*\" --port $PORT --i 0.0.0.0"]
