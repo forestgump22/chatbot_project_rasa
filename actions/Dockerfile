@@ -3,6 +3,11 @@ FROM rasa/rasa-sdk:3.6.2
 
 WORKDIR /app
 
+# --- MANEJO DE PERMISOS ---
+USER root
+RUN chown -R 1001:0 /opt/venv
+USER 1001
+
 # Instalar dependencias específicas de Gemini
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
