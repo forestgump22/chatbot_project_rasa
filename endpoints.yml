@@ -3,6 +3,3 @@ action_endpoint:
 
 tracker_store:
   type: InMemoryTrackerStore
-
-lock_store: 
-  type: InMemoryLockStore
