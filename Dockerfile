@@ -12,6 +12,5 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-EXPOSE 5005
-
-CMD ["sh", "-c", "rasa run --enable-api --cors \"*\" --port $PORT --response-timeout 60"]
+# ⚡ CRÍTICO: Usar el puerto de Render, no uno fijo
+CMD ["sh", "-c", "rasa run --enable-api --cors \"*\" --port $PORT"]

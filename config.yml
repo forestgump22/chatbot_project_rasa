@@ -8,22 +8,24 @@ pipeline:
 - name: LexicalSyntacticFeaturizer
 - name: CountVectorsFeaturizer
 - name: CountVectorsFeaturizer
+  max_features: 300
   analyzer: "char_wb"
   min_ngram: 1
-  max_ngram: 4
+  max_ngram: 2
 - name: DIETClassifier
-  epochs: 50
+  epochs: 30
+  batch_size: 32
 - name: EntitySynonymMapper
 - name: ResponseSelector
-  epochs: 50
+  epochs: 30
 
 policies:
 - name: MemoizationPolicy
 - name: RulePolicy
 - name: UnexpecTEDIntentPolicy
-  max_history: 5
-  epochs: 50
+  max_history: 2
+  epochs: 30
 - name: TEDPolicy
-  max_history: 5
-  epochs: 50
+  max_history: 2
+  epochs: 30
 assistant_id: 20250922-150757-bare-ticket
