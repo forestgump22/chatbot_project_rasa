@@ -1,54 +1,43 @@
 # render.yaml
-
-# Define las variables de entorno que se compartirán entre los servicios.
-# Crearemos un "Environment Group" en Render con este nombre.
-envVarGroups:
-  - name: chatbot-secrets
-    envVars:
-      - key: GEMINI_API_KEY
-        sync: false # Lo estableceremos manualmente en el dashboard
-      - key: PYTHON_VERSION
-        value: 3.10.5
-      - key: FLASK_SECRET_KEY
-        generateValue: true # Render generará una clave segura
+# Instrucciones para que Render.com despliegue nuestro chatbot
 
 services:
-  # Servicio 1: Servidor de Acciones de RASA
+  # Servicio 1: El Servidor de Acciones (usando el Dockerfile)
   - type: web
-    name: rasa-actions
+    name: chatbot-actions
     env: docker
-    repo: https://github.com/forestgump22/chatbot_project_rasa.git
+    # Ruta a tu Dockerfile dentro del repositorio
     dockerfilePath: ./actions/Dockerfile
-    dockerContext: ./actions
-    healthCheckPath: /health
-    envVarGroup: chatbot-secrets # Usa el grupo de variables
+    # Plan de servicio (Starter es suficiente para las acciones)
+    plan: starter
 
-  # Servicio 2: Servidor Principal de RASA
+  # Servicio 2: El Servidor Principal de RASA
   - type: web
-    name: rasa-server
+    name: chatbot-rasa
     env: python
-    repo: https://github.com/forestgump22/chatbot_project_rasa.git
-    plan: starter # Los modelos de RASA pueden necesitar más RAM
+    # Plan de servicio (RASA necesita un poco más de memoria)
+    plan: starter
+    # Comandos que Render ejecutará para preparar y lanzar el servicio
     buildCommand: |
       pip install -r requirements.txt
       rasa train
-    startCommand: rasa run --enable-api --cors "*" --port $PORT
-    healthCheckPath: /
-    envVarGroup: chatbot-secrets # Usa el grupo de variables
+    startCommand: rasa run --enable-api --cors "*"
+    # Variables de entorno para conectar este servicio con el de acciones
     envVars:
-      # Conecta este servicio con el servidor de acciones
       - key: ACTION_ENDPOINT_URL
-        value: http://rasa-actions:5055/webhook
+        # Render automáticamente crea una URL interna con el nombre del otro servicio
+        value: http://chatbot-actions:5055/webhook
 
-  # Servicio 3: Aplicación Flask (Interfaz con el usuario)
+  # Servicio 3: La Aplicación Web (Frontend)
   - type: web
-    name: flask-app
+    name: chatbot-frontend
     env: python
-    repo: https://github.com/forestgump22/chatbot_project_rasa.git
+    # Plan de servicio
+    plan: starter
+    # Comandos de preparación y lanzamiento
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --worker-class gevent --bind 0.0.0.0:$PORT app:app
-    envVarGroup: chatbot-secrets # Usa el grupo de variables
+    startCommand: gunicorn app:app
+    # Variables de entorno para conectar el frontend con el servidor RASA
     envVars:
-      # Conecta Flask con el servidor principal de RASA
       - key: RASA_API_URL
-        value: http://rasa-server:5005/webhooks/rest/webhook
+        value: http://chatbot-rasa:5005/webhooks/rest/webhook

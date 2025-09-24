@@ -12,7 +12,7 @@ models/*.tar.gz
 
 # Archivos de entorno local
 *.env
-
+./.env
 .rasa
 *.md
 # Carpetas de VSCode y otros editores
