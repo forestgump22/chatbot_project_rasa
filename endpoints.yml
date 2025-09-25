@@ -1,2 +1,4 @@
+# action_endpoint:
+  # url: "https://chatbot-project-rasa.onrender.com/webhook"
 action_endpoint:
-  url: "https://chatbot-project-rasa.onrender.com/webhook"
+  url: "http://localhost:5055/webhook"
